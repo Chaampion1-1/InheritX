@@ -14,6 +14,12 @@ fn sign_payload(secret: &str, body: &[u8]) -> String {
     format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
 }
 
+fn sign_payload_raw_hex(secret: &str, body: &[u8]) -> String {
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+    mac.update(body);
+    hex::encode(mac.finalize().into_bytes())
+}
+
 fn valid_payload() -> &'static str {
     r#"{"wallet_address":"GDTEST123","status":"approved","event_type":"kyc.status_update","provider_reference":"ref-001"}"#
 }
@@ -38,6 +44,9 @@ fn test_state(secret: Option<&str>) -> std::sync::Arc<inheritx_backend::AppState
         ),
     })
 }
+
+// ─── WEBHOOK SIGNATURE & AUTHENTICATION TESTS ──────────────────
+
 #[tokio::test]
 async fn test_webhook_rejects_invalid_signature() {
     let app = inheritx_backend::create_router(test_state(Some("test-secret")));
@@ -77,7 +86,6 @@ async fn test_webhook_rejects_missing_signature_header() {
 
 #[tokio::test]
 async fn test_webhook_rejects_signature_for_a_different_body() {
-    // Signature is valid, but for a payload other than the one sent.
     let secret = "test-secret";
     let sig = sign_payload(
         secret,
@@ -102,8 +110,30 @@ async fn test_webhook_rejects_signature_for_a_different_body() {
 }
 
 #[tokio::test]
+async fn test_webhook_accepts_raw_hex_signature_without_prefix() {
+    let secret = "test-secret";
+    let body = valid_payload();
+    let sig = sign_payload_raw_hex(secret, body.as_bytes());
+
+    let app = inheritx_backend::create_router(test_state(Some(secret)));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/kyc/webhook")
+                .header("content-type", "application/json")
+                .header("x-kyc-signature", sig)
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn test_webhook_rejects_invalid_json() {
-    // Correctly signed, so the request gets past auth and fails on parsing.
     let secret = "test-secret";
     let body = "not valid json";
     let sig = sign_payload(secret, body.as_bytes());
@@ -145,14 +175,11 @@ async fn test_valid_signature_accepted() {
         .await
         .unwrap();
 
-    // Signature valid — request is authenticated and reaches the handler body.
     assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
 async fn test_webhook_fails_closed_when_secret_not_configured() {
-    // Without a configured secret nothing can be verified, so the endpoint must
-    // reject rather than accept unauthenticated KYC updates.
     let body = valid_payload();
     let app = inheritx_backend::create_router(test_state(None));
     let response = app
@@ -172,4 +199,138 @@ async fn test_webhook_fails_closed_when_secret_not_configured() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+// ─── KYC ENDPOINT REQUEST TESTS ─────────────────────────────
+
+#[tokio::test]
+async fn test_get_kyc_status_endpoint() {
+    let app = inheritx_backend::create_router(test_state(None));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/kyc/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json["wallet_address"], "GDTEST123");
+    assert_eq!(json["kyc_status"], "pending");
+}
+
+#[tokio::test]
+async fn test_submit_kyc_endpoint() {
+    let app = inheritx_backend::create_router(test_state(None));
+    let payload = serde_json::json!({
+        "full_name": "John Doe",
+        "email": "john@example.com",
+        "date_of_birth": "1990-01-01",
+        "nationality": "US",
+        "id_type": "international_passport",
+        "id_number": "A12345678",
+        "expiry_date": "2030-01-01",
+        "street_address": "123 Main St",
+        "city": "New York",
+        "country": "US",
+        "postal_code": "10001",
+        "document_id": "doc-123"
+    });
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/kyc/submit")
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json["kyc_status"], "submitted");
+    assert_eq!(json["provider_reference"], "ref-001");
+}
+
+#[tokio::test]
+async fn test_upload_kyc_document_endpoint() {
+    let app = inheritx_backend::create_router(test_state(None));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/kyc/upload")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert!(json.get("document_id").is_some());
+    assert!(json.get("url").is_some());
+}
+
+#[tokio::test]
+async fn test_is_kyc_required_endpoint() {
+    let app = inheritx_backend::create_router(test_state(None));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/kyc/required")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json["required"], true);
+}
+
+#[tokio::test]
+async fn test_get_kyc_requirements_endpoint() {
+    let app = inheritx_backend::create_router(test_state(None));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/kyc/requirements")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(json["requires_id"], true);
+    assert_eq!(json["requires_address_proof"], true);
+    assert!(json["supported_id_types"].is_array());
+    assert!(json["supported_countries"].is_array());
 }
