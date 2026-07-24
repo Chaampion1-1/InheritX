@@ -122,6 +122,7 @@ pub struct PayoutStatusResponse {
     pub page: i64,
     pub page_size: i64,
     pub total: i64,
+    pub total_pages: i64,
 }
 
 #[derive(Serialize)]
@@ -1513,6 +1514,8 @@ async fn get_anchor_payouts(
         }
     };
 
+    let total_pages = (total as f64 / page_size as f64).ceil() as i64;
+
     (
         StatusCode::OK,
         Json(PayoutStatusResponse {
@@ -1520,6 +1523,7 @@ async fn get_anchor_payouts(
             page,
             page_size,
             total,
+            total_pages,
         }),
     )
         .into_response()
