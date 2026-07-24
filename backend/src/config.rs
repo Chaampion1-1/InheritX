@@ -3,6 +3,9 @@ pub struct Config {
     pub database_url: String,
     pub redis_url: Option<String>,
     pub plan_cache_ttl_secs: u64,
+    /// Shared secret used to verify HMAC-SHA256 signatures on inbound KYC
+    /// provider webhooks. When unset, `/api/kyc/webhook` rejects every request.
+    pub kyc_webhook_secret: Option<String>,
     pub stellar_horizon_url: String,
 }
 
@@ -22,6 +25,10 @@ impl Config {
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(15);
+        let kyc_webhook_secret = std::env::var("KYC_WEBHOOK_SECRET")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
         let stellar_horizon_url = std::env::var("STELLAR_HORIZON_URL")
             .ok()
             .map(|value| value.trim().to_string())
@@ -33,6 +40,7 @@ impl Config {
             database_url,
             redis_url,
             plan_cache_ttl_secs,
+            kyc_webhook_secret,
             stellar_horizon_url,
         })
     }
