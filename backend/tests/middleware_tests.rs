@@ -129,7 +129,8 @@ use inheritx_backend::auth::{jwt_auth_middleware, Claims};
 use jsonwebtoken::{encode, EncodingKey, Header};
 
 fn generate_test_jwt(secret: &str, role: &str, expires_in_secs: i64) -> String {
-    let exp = (chrono::Utc::now() + chrono::Duration::seconds(expires_in_secs)).timestamp() as usize;
+    let now = chrono::Utc::now().timestamp();
+    let exp = (now + expires_in_secs) as usize;
     let claims = Claims {
         sub: "admin-uuid-1234".to_string(),
         role: role.to_string(),
