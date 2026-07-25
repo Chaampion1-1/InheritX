@@ -243,6 +243,7 @@ pub struct BeneficiaryRow {
     pub wallet_address: String,
     pub allocation_bps: i32,
     pub fiat_anchor_info: String,
+    pub fiat_daily_limit: rust_decimal::Decimal,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -276,6 +277,7 @@ pub struct BeneficiaryResponse {
     pub wallet_address: String,
     pub allocation_bps: i32,
     pub fiat_anchor_info: String,
+    pub fiat_daily_limit: rust_decimal::Decimal,
 }
 
 /// Compute the accrued yield for a plan based on elapsed time since last_ping.
@@ -312,7 +314,7 @@ async fn load_beneficiaries(
 ) -> Result<Vec<BeneficiaryResponse>, sqlx::Error> {
     let rows = sqlx::query_as::<_, BeneficiaryRow>(
         r#"
-        SELECT id, plan_id, wallet_address, allocation_bps, fiat_anchor_info
+        SELECT id, plan_id, wallet_address, allocation_bps, fiat_anchor_info, fiat_daily_limit
         FROM beneficiaries
         WHERE plan_id = $1
         "#,
@@ -329,6 +331,7 @@ async fn load_beneficiaries(
             wallet_address: r.wallet_address,
             allocation_bps: r.allocation_bps,
             fiat_anchor_info: r.fiat_anchor_info,
+            fiat_daily_limit: r.fiat_daily_limit,
         })
         .collect())
 }
@@ -578,7 +581,7 @@ async fn create_plan(
                 allocation_bps,
                 fiat_anchor_info
             ) VALUES ($1, $2, $3, $4)
-            RETURNING id, plan_id, wallet_address, allocation_bps, fiat_anchor_info
+            RETURNING id, plan_id, wallet_address, allocation_bps, fiat_anchor_info, fiat_daily_limit
             "#,
         )
         .bind(plan_row.id)
@@ -603,6 +606,7 @@ async fn create_plan(
             wallet_address: beneficiary_row.wallet_address,
             allocation_bps: beneficiary_row.allocation_bps,
             fiat_anchor_info: beneficiary_row.fiat_anchor_info,
+            fiat_daily_limit: beneficiary_row.fiat_daily_limit,
         });
     }
 
@@ -837,7 +841,7 @@ async fn update_plan(
     };
 
     let beneficiaries = match sqlx::query_as::<_, BeneficiaryRow>(
-        "SELECT id, plan_id, wallet_address, allocation_bps, fiat_anchor_info FROM beneficiaries WHERE plan_id = $1"
+        "SELECT id, plan_id, wallet_address, allocation_bps, fiat_anchor_info, fiat_daily_limit FROM beneficiaries WHERE plan_id = $1"
     )
     .bind(plan_id)
     .fetch_all(&state.db_pool)
@@ -860,6 +864,7 @@ async fn update_plan(
             wallet_address: r.wallet_address.clone(),
             allocation_bps: r.allocation_bps,
             fiat_anchor_info: r.fiat_anchor_info.clone(),
+            fiat_daily_limit: r.fiat_daily_limit,
         })
         .collect();
 
@@ -1247,7 +1252,7 @@ async fn trigger_payout(
     // 5. Load beneficiaries for the plan
     let beneficiaries_rows = match sqlx::query_as::<_, BeneficiaryRow>(
         r#"
-        SELECT id, plan_id, wallet_address, allocation_bps, fiat_anchor_info
+        SELECT id, plan_id, wallet_address, allocation_bps, fiat_anchor_info, fiat_daily_limit
         FROM beneficiaries
         WHERE plan_id = $1
         "#,
@@ -1301,6 +1306,41 @@ async fn trigger_payout(
         let payout_type_str = if is_fiat { "fiat" } else { "crypto" };
         let payout_status_str = "processing";
 
+        if is_fiat && b.fiat_daily_limit > Decimal::ZERO {
+            let today = chrono::Utc::now().naive_utc().date();
+            let used_today: Option<Decimal> = sqlx::query_scalar(
+                r#"
+                SELECT total_amount FROM fiat_daily_usage
+                WHERE beneficiary_id = $1 AND usage_date = $2
+                "#,
+            )
+            .bind(b.id)
+            .bind(today)
+            .fetch_optional(&mut *tx)
+            .await
+            .unwrap_or(None);
+
+            let used = used_today.unwrap_or(Decimal::ZERO);
+            if used + share > b.fiat_daily_limit {
+                error!(
+                    beneficiary = %b.wallet_address,
+                    limit = %b.fiat_daily_limit,
+                    used = %used,
+                    requested = %share,
+                    "Daily fiat limit exceeded for beneficiary"
+                );
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": format!(
+                            "Daily fiat payout limit exceeded for beneficiary {}. Limit: {}, already used today: {}, requested: {}",
+                            b.wallet_address, b.fiat_daily_limit, used, share
+                        )
+                    })),
+                ).into_response();
+            }
+        }
+
         let payout_row = match sqlx::query_as::<_, PayoutRow>(
             r#"
             INSERT INTO payouts (plan_id, beneficiary_address, amount, payout_type, status)
@@ -1340,6 +1380,34 @@ async fn trigger_payout(
                 account_number,
             };
             state.anchor.create_payout(req);
+
+            if b.fiat_daily_limit > Decimal::ZERO {
+                let today = chrono::Utc::now().naive_utc().date();
+                if let Err(e) = sqlx::query(
+                    r#"
+                    INSERT INTO fiat_daily_usage (beneficiary_id, usage_date, total_amount)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (beneficiary_id, usage_date)
+                    DO UPDATE SET total_amount = fiat_daily_usage.total_amount + $3
+                    "#,
+                )
+                .bind(b.id)
+                .bind(today)
+                .bind(share)
+                .execute(&mut *tx)
+                .await
+                {
+                    error!(
+                        beneficiary = %b.wallet_address,
+                        error = %e,
+                        "Failed to update fiat daily usage"
+                    );
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({ "error": format!("Failed to update fiat daily usage: {}", e) })),
+                    ).into_response();
+                }
+            }
         } else {
             tracing::info!(
                 plan_id = %plan.id,
@@ -1723,24 +1791,25 @@ pub async fn get_plan_report(
     };
 
     // 2. Fetch beneficiaries
-    let beneficiary_rows =
-        match sqlx::query_as::<_, BeneficiaryRow>(
-            "SELECT id, plan_id, wallet_address, allocation_bps, fiat_anchor_info \
-         FROM beneficiaries WHERE plan_id = $1 ORDER BY allocation_bps DESC",
-        )
-        .bind(plan_id)
-        .fetch_all(&state.db_pool)
-        .await
-        {
-            Ok(rows) => rows,
-            Err(e) => return (
+    let beneficiary_rows = match sqlx::query_as::<_, BeneficiaryRow>(
+        "SELECT id, plan_id, wallet_address, allocation_bps, fiat_anchor_info, fiat_daily_limit \
+          FROM beneficiaries WHERE plan_id = $1 ORDER BY allocation_bps DESC",
+    )
+    .bind(plan_id)
+    .fetch_all(&state.db_pool)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(
                     serde_json::json!({ "error": format!("Failed to load beneficiaries: {}", e) }),
                 ),
             )
-                .into_response(),
-        };
+                .into_response()
+        }
+    };
 
     // 3. Fetch ping logs
     let ping_rows = match sqlx::query_as::<_, PingLogRow>(
