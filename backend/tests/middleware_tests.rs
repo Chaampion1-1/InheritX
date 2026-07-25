@@ -360,4 +360,3 @@ async fn test_admin_login_empty_payload_returns_400() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
-

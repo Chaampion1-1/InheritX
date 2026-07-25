@@ -616,4 +616,3 @@ async fn test_get_plans_cache_miss_attempts_db_query() {
     // Cache miss will attempt database lookup; without running Postgres it returns 500 DB error
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
-
