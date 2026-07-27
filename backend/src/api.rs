@@ -1819,20 +1819,7 @@ async fn submit_kyc(
     (StatusCode::OK, Json(response)).into_response()
 }
 
-    let response = KYCStatusResponse {
-        wallet_address: wallet_address.clone(),
-        kyc_status: "submitted".to_string(),
-        submitted_at: Some(Utc::now()),
-        approved_at: None,
-        rejected_at: None,
-        rejection_reason: None,
-        // Echo any provider reference supplied by the caller (tests mock the
-        // provider by including this in the request payload).
-        provider_reference: payload.provider_reference.clone(),
-    };
-
-    (StatusCode::OK, Json(response)).into_response()
-}
+    
 
 // Upload KYC document
 async fn upload_kyc_document() -> impl IntoResponse {
