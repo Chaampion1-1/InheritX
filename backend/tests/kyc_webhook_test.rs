@@ -58,11 +58,26 @@ async fn cleanup_test_wallet() {
     }
 }
 
+async fn create_clean_router(secret: Option<&str>) -> axum::Router {
+    let state = test_state(secret);
+    // best-effort cleanup; surface errors if they occur
+    sqlx::query("DELETE FROM kyc_records WHERE wallet_address='GDTEST123'")
+        .execute(&state.db_pool)
+        .await
+        .expect("failed to delete kyc_records for GDTEST123");
+    sqlx::query("DELETE FROM users WHERE wallet_address='GDTEST123'")
+        .execute(&state.db_pool)
+        .await
+        .expect("failed to delete users row for GDTEST123");
+
+    inheritx_backend::create_router(state)
+}
+
 // ─── WEBHOOK SIGNATURE & AUTHENTICATION TESTS ──────────────────
 
 #[tokio::test]
 async fn test_webhook_rejects_invalid_signature() {
-    let app = inheritx_backend::create_router(test_state(Some("test-secret")));
+    let app = create_clean_router(Some("test-secret")).await;
     let response = app
         .oneshot(
             Request::builder()
@@ -81,7 +96,7 @@ async fn test_webhook_rejects_invalid_signature() {
 
 #[tokio::test]
 async fn test_webhook_rejects_missing_signature_header() {
-    let app = inheritx_backend::create_router(test_state(Some("test-secret")));
+    let app = create_clean_router(Some("test-secret")).await;
     let response = app
         .oneshot(
             Request::builder()
@@ -105,7 +120,7 @@ async fn test_webhook_rejects_signature_for_a_different_body() {
         br#"{"wallet_address":"GDOTHER","status":"rejected"}"#,
     );
 
-    let app = inheritx_backend::create_router(test_state(Some(secret)));
+    let app = create_clean_router(Some(secret)).await;
     let response = app
         .oneshot(
             Request::builder()
@@ -128,7 +143,7 @@ async fn test_webhook_accepts_raw_hex_signature_without_prefix() {
     let body = valid_payload();
     let sig = sign_payload_raw_hex(secret, body.as_bytes());
 
-    let app = inheritx_backend::create_router(test_state(Some(secret)));
+    let app = create_clean_router(Some(secret)).await;
     let response = app
         .oneshot(
             Request::builder()
@@ -151,7 +166,7 @@ async fn test_webhook_rejects_invalid_json() {
     let body = "not valid json";
     let sig = sign_payload(secret, body.as_bytes());
 
-    let app = inheritx_backend::create_router(test_state(Some(secret)));
+    let app = create_clean_router(Some(secret)).await;
     let response = app
         .oneshot(
             Request::builder()
@@ -174,7 +189,7 @@ async fn test_valid_signature_accepted() {
     let body = valid_payload();
     let sig = sign_payload(secret, body.as_bytes());
 
-    let app = inheritx_backend::create_router(test_state(Some(secret)));
+    let app = create_clean_router(Some(secret)).await;
     let response = app
         .oneshot(
             Request::builder()
@@ -194,7 +209,7 @@ async fn test_valid_signature_accepted() {
 #[tokio::test]
 async fn test_webhook_fails_closed_when_secret_not_configured() {
     let body = valid_payload();
-    let app = inheritx_backend::create_router(test_state(None));
+    let app = create_clean_router(None).await;
     let response = app
         .oneshot(
             Request::builder()
@@ -218,8 +233,21 @@ async fn test_webhook_fails_closed_when_secret_not_configured() {
 
 #[tokio::test]
 async fn test_get_kyc_status_endpoint() {
-    cleanup_test_wallet().await;
-    let app = inheritx_backend::create_router(test_state(None));
+    // Create the app state first so we can clean the same DB pool used by the
+    // router. This prevents silent failures where a separate connection can't
+    // reach the test DB.
+    let state = test_state(None);
+    // Ensure cleanup errors are visible — don't ignore the result.
+    sqlx::query("DELETE FROM kyc_records WHERE wallet_address='GDTEST123'")
+        .execute(&state.db_pool)
+        .await
+        .expect("failed to delete kyc_records for GDTEST123");
+    sqlx::query("DELETE FROM users WHERE wallet_address='GDTEST123'")
+        .execute(&state.db_pool)
+        .await
+        .expect("failed to delete users row for GDTEST123");
+
+    let app = inheritx_backend::create_router(state);
     let response = app
         .oneshot(
             Request::builder()
@@ -242,7 +270,7 @@ async fn test_get_kyc_status_endpoint() {
 
 #[tokio::test]
 async fn test_submit_kyc_endpoint() {
-    let app = inheritx_backend::create_router(test_state(None));
+    let app = create_clean_router(None).await;
     let payload = serde_json::json!({
         "full_name": "John Doe",
         "email": "john@example.com",
@@ -282,7 +310,7 @@ async fn test_submit_kyc_endpoint() {
 
 #[tokio::test]
 async fn test_upload_kyc_document_endpoint() {
-    let app = inheritx_backend::create_router(test_state(None));
+    let app = create_clean_router(None).await;
     let response = app
         .oneshot(
             Request::builder()
@@ -305,7 +333,7 @@ async fn test_upload_kyc_document_endpoint() {
 
 #[tokio::test]
 async fn test_is_kyc_required_endpoint() {
-    let app = inheritx_backend::create_router(test_state(None));
+    let app = create_clean_router(None).await;
     let response = app
         .oneshot(
             Request::builder()
@@ -327,7 +355,7 @@ async fn test_is_kyc_required_endpoint() {
 
 #[tokio::test]
 async fn test_get_kyc_requirements_endpoint() {
-    let app = inheritx_backend::create_router(test_state(None));
+    let app = create_clean_router(None).await;
     let response = app
         .oneshot(
             Request::builder()
