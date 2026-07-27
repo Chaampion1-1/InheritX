@@ -613,6 +613,17 @@ async fn test_get_plans_cache_miss_attempts_db_query() {
         .await
         .unwrap();
 
-    // Cache miss will attempt database lookup; without running Postgres it returns 500 DB error
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    // Cache miss will attempt database lookup. If Postgres is online (such as in CI),
+    // it returns 200 OK with x-plan-cache-status: miss; if offline, it returns 500 DB error.
+    let status = response.status();
+    assert!(
+        status == StatusCode::OK || status == StatusCode::INTERNAL_SERVER_ERROR,
+        "Expected OK or INTERNAL_SERVER_ERROR, got {status}"
+    );
+    if status == StatusCode::OK {
+        assert_eq!(
+            response.headers().get("x-plan-cache-status").unwrap(),
+            "miss"
+        );
+    }
 }

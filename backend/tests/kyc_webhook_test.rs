@@ -27,10 +27,10 @@ fn valid_payload() -> &'static str {
 fn test_state(secret: Option<&str>) -> std::sync::Arc<inheritx_backend::AppState> {
     use inheritx_backend::stellar_anchor::AnchorRegistry;
 
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://postgres:password@localhost:5432/test".to_string());
     let (kyc_tx, _) = tokio::sync::broadcast::channel(100);
-    let pool =
-        sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/inheritx_test")
-            .unwrap();
+    let pool = sqlx::PgPool::connect_lazy(&database_url).unwrap();
 
     std::sync::Arc::new(inheritx_backend::AppState {
         anchor: std::sync::Arc::new(AnchorRegistry::new()),

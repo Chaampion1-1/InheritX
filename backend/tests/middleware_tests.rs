@@ -323,9 +323,9 @@ async fn test_jwt_auth_valid_admin_token_succeeds() {
 async fn test_admin_login_empty_payload_returns_400() {
     use inheritx_backend::stellar_anchor::AnchorRegistry;
 
-    let pool =
-        sqlx::PgPool::connect_lazy("postgres://postgres:postgres@localhost:5432/inheritx_test")
-            .unwrap();
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://postgres:password@localhost:5432/test".to_string());
+    let pool = sqlx::PgPool::connect_lazy(&database_url).unwrap();
 
     let state = std::sync::Arc::new(inheritx_backend::AppState {
         anchor: std::sync::Arc::new(AnchorRegistry::new()),
