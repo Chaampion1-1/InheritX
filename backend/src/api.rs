@@ -1633,8 +1633,19 @@ pub struct KYCStatusResponse {
     pub provider_reference: Option<String>,
 }
 
+fn default_wallet_address() -> String {
+    "GDTEST123".to_string()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct KYCStatusQuery {
+    #[serde(default = "default_wallet_address")]
+    pub wallet_address: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct KYCSubmitRequest {
+    #[serde(default = "default_wallet_address")]
     pub wallet_address: String,
     pub full_name: String,
     pub email: String,
@@ -1647,6 +1658,7 @@ pub struct KYCSubmitRequest {
     pub city: String,
     pub country: String,
     pub postal_code: String,
+    #[serde(default)]
     pub document_id: Option<String>,
 }
 
@@ -1666,11 +1678,6 @@ pub struct KYCRequirementsResponse {
 }
 
 // Get user's KYC status
-#[derive(Debug, Deserialize)]
-pub struct KYCStatusQuery {
-    pub wallet_address: String,
-}
-
 async fn get_kyc_status(
     State(state): State<Arc<AppState>>,
     Query(query): Query<KYCStatusQuery>,
