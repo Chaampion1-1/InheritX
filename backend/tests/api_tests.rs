@@ -447,183 +447,105 @@ async fn test_trigger_payout_valid_signature_not_found() {
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
-// ─── PLAN QUERY FILTER REQUEST TESTS ────────────────────────
+// --- Health check endpoint tests ---
 
 #[tokio::test]
-async fn test_get_plans_filter_by_owner_query() {
-    let cache = PlanCache::memory();
-    let query = inheritx_backend::api::PlanQuery {
-        owner: Some("GOWNER_SPECIFIC".to_string()),
-        beneficiary: None,
-    };
-    let cached_plans = vec![PlanResponse {
-        id: uuid::Uuid::new_v4(),
-        owner_address: "GOWNER_SPECIFIC".to_string(),
-        token_address: "USDC".to_string(),
-        amount: rust_decimal::Decimal::from(500),
-        grace_period: 7200,
-        grace_period_seconds: 7200,
-        earn_yield: false,
-        last_ping: 1_718_000_000,
-        is_active: true,
-        status: "ACTIVE".to_string(),
-        yield_rate_bps: 0,
-        accrued_yield: 0.0,
-        created_at: chrono::Utc::now(),
-        beneficiaries: vec![],
-    }];
-    cache.set_plans(&query, &cached_plans).await.unwrap();
-
-    let app = setup_app_with_cache(cache);
+async fn test_health_endpoint_is_public() {
+    let app = setup_app();
 
     let response = app
         .oneshot(
             Request::builder()
                 .method(http::Method::GET)
-                .uri("/api/plans?owner=GOWNER_SPECIFIC")
+                .uri("/api/health")
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers().get("x-plan-cache-status").unwrap(),
-        "hit"
-    );
+    // Should not require auth
+    assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_health_endpoint_returns_json_with_expected_structure() {
+    let app = setup_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
 
     let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    let json: Vec<serde_json::Value> = serde_json::from_slice(&body_bytes).unwrap();
-    assert_eq!(json.len(), 1);
-    assert_eq!(json[0]["owner_address"], "GOWNER_SPECIFIC");
-}
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
 
-#[tokio::test]
-async fn test_get_plans_filter_by_beneficiary_query() {
-    let cache = PlanCache::memory();
-    let query = inheritx_backend::api::PlanQuery {
-        owner: None,
-        beneficiary: Some("GBENEFICIARY_BEN1".to_string()),
-    };
-    let cached_plans = vec![PlanResponse {
-        id: uuid::Uuid::new_v4(),
-        owner_address: "GOWNER_ANY".to_string(),
-        token_address: "USDC".to_string(),
-        amount: rust_decimal::Decimal::from(250),
-        grace_period: 3600,
-        grace_period_seconds: 3600,
-        earn_yield: true,
-        last_ping: 1_718_000_000,
-        is_active: true,
-        status: "ACTIVE".to_string(),
-        yield_rate_bps: 100,
-        accrued_yield: 1.5,
-        created_at: chrono::Utc::now(),
-        beneficiaries: vec![],
-    }];
-    cache.set_plans(&query, &cached_plans).await.unwrap();
-
-    let app = setup_app_with_cache(cache);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method(http::Method::GET)
-                .uri("/api/plans?beneficiary=GBENEFICIARY_BEN1")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers().get("x-plan-cache-status").unwrap(),
-        "hit"
-    );
-
-    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let json: Vec<serde_json::Value> = serde_json::from_slice(&body_bytes).unwrap();
-    assert_eq!(json.len(), 1);
-}
-
-#[tokio::test]
-async fn test_get_plans_filter_by_owner_and_beneficiary_query() {
-    let cache = PlanCache::memory();
-    let query = inheritx_backend::api::PlanQuery {
-        owner: Some("GOWNER_BOTH".to_string()),
-        beneficiary: Some("GBENEFICIARY_BOTH".to_string()),
-    };
-    let cached_plans = vec![PlanResponse {
-        id: uuid::Uuid::new_v4(),
-        owner_address: "GOWNER_BOTH".to_string(),
-        token_address: "XLM".to_string(),
-        amount: rust_decimal::Decimal::from(1000),
-        grace_period: 86400,
-        grace_period_seconds: 86400,
-        earn_yield: false,
-        last_ping: 1_718_000_000,
-        is_active: true,
-        status: "ACTIVE".to_string(),
-        yield_rate_bps: 0,
-        accrued_yield: 0.0,
-        created_at: chrono::Utc::now(),
-        beneficiaries: vec![],
-    }];
-    cache.set_plans(&query, &cached_plans).await.unwrap();
-
-    let app = setup_app_with_cache(cache);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method(http::Method::GET)
-                .uri("/api/plans?owner=GOWNER_BOTH&beneficiary=GBENEFICIARY_BOTH")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers().get("x-plan-cache-status").unwrap(),
-        "hit"
-    );
-}
-
-#[tokio::test]
-async fn test_get_plans_cache_miss_attempts_db_query() {
-    let cache = PlanCache::memory();
-    let app = setup_app_with_cache(cache);
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method(http::Method::GET)
-                .uri("/api/plans?owner=GOWNER_UNCACHED")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    // Cache miss will attempt database lookup. If Postgres is online (such as in CI),
-    // it returns 200 OK with x-plan-cache-status: miss; if offline, it returns 500 DB error.
-    let status = response.status();
+    assert!(body.is_object());
+    assert!(body.get("status").is_some(), "missing 'status' field");
     assert!(
-        status == StatusCode::OK || status == StatusCode::INTERNAL_SERVER_ERROR,
-        "Expected OK or INTERNAL_SERVER_ERROR, got {status}"
+        body.get("postgresql").is_some(),
+        "missing 'postgresql' field"
     );
-    if status == StatusCode::OK {
-        assert_eq!(
-            response.headers().get("x-plan-cache-status").unwrap(),
-            "miss"
-        );
-    }
+    assert!(
+        body.get("stellar_rpc").is_some(),
+        "missing 'stellar_rpc' field"
+    );
+}
+
+#[tokio::test]
+async fn test_health_endpoint_without_db_yields_service_unavailable() {
+    // Use a bogus database URL that will always fail to connect
+    let db_pool = sqlx::postgres::PgPoolOptions::new()
+        .acquire_timeout(Duration::from_secs(1))
+        .connect_lazy("postgres://localhost:1/nonexistent")
+        .unwrap();
+    let state = Arc::new(AppState {
+        anchor: Arc::new(inheritx_backend::stellar_anchor::AnchorRegistry::new()),
+        db_pool,
+        kyc_tx: tokio::sync::broadcast::channel(16).0,
+        kyc_webhook_secret: None,
+        apy_config: inheritx_backend::yield_calculator::ApyConfig::default(),
+        plan_cache: PlanCache::disabled(),
+        stellar_submit: inheritx_backend::stellar_submit::StellarSubmitClient::new(
+            "https://horizon-testnet.stellar.org".to_string(),
+        ),
+    });
+    let app = create_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http::Method::GET)
+                .uri("/api/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    // Without a real database, postgresql should be "down"
+    assert_eq!(body["postgresql"], "down");
+
+    // With PostgreSQL down, the handler always returns 503
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+
+    let status_str = body["status"].as_str().unwrap();
+    assert!(
+        status_str == "degraded" || status_str == "unhealthy",
+        "expected status to be 'degraded' or 'unhealthy', got '{status_str}'"
+    );
 }

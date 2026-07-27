@@ -1,3 +1,6 @@
+use rust_decimal::prelude::FromPrimitive;
+use rust_decimal::Decimal;
+
 pub struct Config {
     pub port: u16,
     pub database_url: String,
@@ -7,6 +10,7 @@ pub struct Config {
     /// provider webhooks. When unset, `/api/kyc/webhook` rejects every request.
     pub kyc_webhook_secret: Option<String>,
     pub stellar_horizon_url: String,
+    pub fiat_daily_limit_default: rust_decimal::Decimal,
 }
 
 impl Config {
@@ -25,6 +29,11 @@ impl Config {
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(15);
+        let fiat_daily_limit_default = std::env::var("FIAT_DAILY_LIMIT_DEFAULT")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .and_then(Decimal::from_f64)
+            .unwrap_or(Decimal::ZERO);
         let kyc_webhook_secret = std::env::var("KYC_WEBHOOK_SECRET")
             .ok()
             .map(|value| value.trim().to_string())
@@ -42,6 +51,7 @@ impl Config {
             plan_cache_ttl_secs,
             kyc_webhook_secret,
             stellar_horizon_url,
+            fiat_daily_limit_default,
         })
     }
 }
