@@ -241,7 +241,8 @@ async fn test_submit_kyc_endpoint() {
         "city": "New York",
         "country": "US",
         "postal_code": "10001",
-        "document_id": "doc-123"
+        "document_id": "doc-123",
+        "provider_reference": "ref-001"
     });
 
     let response = app
