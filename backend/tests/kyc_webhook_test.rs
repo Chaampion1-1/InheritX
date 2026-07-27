@@ -48,13 +48,14 @@ fn test_state(secret: Option<&str>) -> std::sync::Arc<inheritx_backend::AppState
 async fn cleanup_test_wallet() {
     let database_url = std::env::var("DATABASE_URL")
         .unwrap_or_else(|_| "postgres://postgres:password@localhost:5432/test".to_string());
-    let pool = sqlx::PgPool::connect(&database_url).await.unwrap();
-    let _ = sqlx::query("DELETE FROM kyc_records WHERE wallet_address='GDTEST123'")
-        .execute(&pool)
-        .await;
-    let _ = sqlx::query("DELETE FROM users WHERE wallet_address='GDTEST123'")
-        .execute(&pool)
-        .await;
+    if let Ok(pool) = sqlx::PgPool::connect_lazy(&database_url) {
+        let _ = sqlx::query("DELETE FROM kyc_records WHERE wallet_address='GDTEST123'")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM users WHERE wallet_address='GDTEST123'")
+            .execute(&pool)
+            .await;
+    }
 }
 
 // ─── WEBHOOK SIGNATURE & AUTHENTICATION TESTS ──────────────────
