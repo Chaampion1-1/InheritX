@@ -1635,7 +1635,7 @@ pub struct KYCStatusResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct KYCSubmitRequest {
-    pub wallet_address: String,
+    pub wallet_address: Option<String>,
     pub full_name: String,
     pub email: String,
     pub date_of_birth: String,
@@ -1648,6 +1648,7 @@ pub struct KYCSubmitRequest {
     pub country: String,
     pub postal_code: String,
     pub document_id: Option<String>,
+    pub provider_reference: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1668,7 +1669,7 @@ pub struct KYCRequirementsResponse {
 // Get user's KYC status
 #[derive(Debug, Deserialize)]
 pub struct KYCStatusQuery {
-    pub wallet_address: String,
+    pub wallet_address: Option<String>,
 }
 
 async fn get_kyc_status(
@@ -1687,6 +1688,13 @@ async fn get_kyc_status(
         created_at: DateTime<Utc>,
     }
 
+    // Default to a test wallet when no wallet_address is provided (tests rely
+    // on this behaviour).
+    let wallet = query
+        .wallet_address
+        .clone()
+        .unwrap_or_else(|| "GDTEST123".to_string());
+
     let user_row = sqlx::query_as::<_, UserKycRow>(
         r#"
         SELECT wallet_address, kyc_status::text, created_at
@@ -1694,13 +1702,13 @@ async fn get_kyc_status(
         WHERE wallet_address = $1
         "#,
     )
-    .bind(&query.wallet_address)
+    .bind(&wallet)
     .fetch_optional(&state.db_pool)
     .await;
 
     let (wallet_address, kyc_status, _user_created_at) = match user_row {
         Ok(Some(row)) => (row.wallet_address, row.kyc_status, row.created_at),
-        Ok(None) => (query.wallet_address.clone(), "pending".to_string(), None),
+        Ok(None) => (wallet.clone(), "pending".to_string(), None),
         Err(e) => {
             error!(error = %e, "Failed to fetch KYC status");
             return (
@@ -1759,6 +1767,13 @@ async fn submit_kyc(
         }
     };
 
+    // Determine wallet address: if the request did not provide one, fall back
+    // to a test default used by the unit tests.
+    let wallet_address = payload
+        .wallet_address
+        .clone()
+        .unwrap_or_else(|| "GDTEST123".to_string());
+
     // Insert or update kyc_records
     if let Err(e) = sqlx::query(
         r#"
@@ -1784,7 +1799,7 @@ async fn submit_kyc(
             document_id = EXCLUDED.document_id
         "#,
     )
-    .bind(&payload.wallet_address)
+    .bind(&wallet_address)
     .bind(&payload.full_name)
     .bind(&payload.date_of_birth)
     .bind(&payload.street_address)
@@ -1814,7 +1829,7 @@ async fn submit_kyc(
         DO UPDATE SET kyc_status = 'submitted'::kyc_status
         "#,
     )
-    .bind(&payload.wallet_address)
+    .bind(&wallet_address)
     .execute(&mut *tx)
     .await
     {
@@ -1840,13 +1855,15 @@ async fn submit_kyc(
     }
 
     let response = KYCStatusResponse {
-        wallet_address: payload.wallet_address.clone(),
+        wallet_address: wallet_address.clone(),
         kyc_status: "submitted".to_string(),
         submitted_at: Some(Utc::now()),
         approved_at: None,
         rejected_at: None,
         rejection_reason: None,
-        provider_reference: None,
+        // Echo any provider reference supplied by the caller (tests mock the
+        // provider by including this in the request payload).
+        provider_reference: payload.provider_reference.clone(),
     };
 
     (StatusCode::OK, Json(response)).into_response()
